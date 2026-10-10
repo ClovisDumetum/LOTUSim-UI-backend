@@ -26,7 +26,8 @@
  * Endpoints:
  * - GET    /models           -> List all available models.
  * - POST   /model            -> Create a new model (SDF + Xdyn YAML).
- * - DELETE /model            -> Delete an existing model by name.
+ * - DELETE /model/:name      -> Delete an existing model by name (also
+ *                               DELETE /model?name=, as earlier frontends sent).
  *
  * Notes:
  * - Uses synchronous and asynchronous file operations.
@@ -56,8 +57,10 @@ const router = Router();
 
 export interface CreateModelRequestBody {
   modelName: string;
-  image: string;
-  stl: string;
+  /** Unused: the STL and the image come afterwards through POST /upload, and
+   * the SDF always points to model://<modelName>/<modelName>.stl. */
+  image?: string;
+  stl?: string;
   sensors: Sensor[];
   xdyn?: {
     name: string;
@@ -87,9 +90,6 @@ const invalid = (error: string): ValidationResult => ({ valid: false, error });
 const validateCreateModelRequest = (body: CreateModelRequestBody): ValidationResult => {
   if (!body.modelName || typeof body.modelName !== "string")
     return invalid("Missing or invalid field: modelName");
-  if (!body.stl || typeof body.stl !== "string") return invalid("Missing or invalid field: stl");
-  if (!body.image || typeof body.image !== "string")
-    return invalid("Missing or invalid field: image");
   if (body.xdyn && !body.xdyn.name) return invalid("Missing field: xdyn.name");
   return { valid: true };
 };
@@ -105,11 +105,9 @@ const safeParse1DArray = (input: string | number[]): number[] =>
 const ensureDirectory = (dirPath: string): Promise<void> =>
   fs.promises.mkdir(dirPath, { recursive: true }).then(() => undefined);
 
-const buildSdfFile = (modelName: string, stl: string, image: string, sensors: Sensor[]): string => {
+const buildSdfFile = (modelName: string, sensors: Sensor[] = []): string => {
   const sdf = new SDF();
   sdf.name = modelName;
-  sdf.stlUrl = stl;
-  sdf.imagePath = image;
   sdf.sensors = sensors;
   return sdf.createSdfFile();
 };
@@ -193,12 +191,12 @@ router.post("/model", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const { modelName, stl, sensors, image, xdyn } = body;
+    const { modelName, sensors, xdyn } = body;
     const folderPath = path.join(modelsPath, modelName);
 
     await ensureDirectory(folderPath);
 
-    const sdfContent = buildSdfFile(modelName, stl, image, sensors);
+    const sdfContent = buildSdfFile(modelName, sensors);
     await fs.promises.writeFile(path.join(folderPath, "model.sdf"), sdfContent, "utf-8");
 
     if (xdyn) {
@@ -217,12 +215,15 @@ router.post("/model", async (req: Request, res: Response): Promise<void> => {
 });
 
 /**
- * DELETE /model/:name
+ * DELETE /model/:name (or DELETE /model?name=)
  * Deletes a model by name.
  */
-router.delete("/model/:name", async (req: Request, res: Response): Promise<void> => {
+const deleteModel = async (name: unknown, res: Response): Promise<void> => {
   try {
-    const { name } = req.params;
+    if (!name || typeof name !== "string") {
+      res.status(400).json({ success: false, message: "Missing or invalid model name" });
+      return;
+    }
     const modelPath = path.join(modelsPath, name);
 
     try {
@@ -242,6 +243,9 @@ router.delete("/model/:name", async (req: Request, res: Response): Promise<void>
     console.error("Error deleting model:", err);
     res.status(500).json({ success: false, message: errorMessage(err) });
   }
-});
+};
+
+router.delete("/model/:name", (req: Request, res: Response) => deleteModel(req.params.name, res));
+router.delete("/model", (req: Request, res: Response) => deleteModel(req.query.name, res));
 
 export default router;
