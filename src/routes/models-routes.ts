@@ -61,7 +61,7 @@ export interface CreateModelRequestBody {
    * the SDF always points to model://<modelName>/<modelName>.stl. */
   image?: string;
   stl?: string;
-  sensors: Sensor[];
+  sensors?: Sensor[];
   xdyn?: {
     name: string;
     wave: Wave;
@@ -104,6 +104,13 @@ const safeParse1DArray = (input: string | number[]): number[] =>
 
 const ensureDirectory = (dirPath: string): Promise<void> =>
   fs.promises.mkdir(dirPath, { recursive: true }).then(() => undefined);
+
+const resolveModelPath = (name: unknown): string | null => {
+  if (!name || typeof name !== "string") return null;
+  const root = path.resolve(modelsPath);
+  const resolved = path.resolve(root, name);
+  return path.dirname(resolved) === root ? resolved : null;
+};
 
 const buildSdfFile = (modelName: string, sensors: Sensor[] = []): string => {
   const sdf = new SDF();
@@ -161,7 +168,11 @@ router.get("/models", async (req: Request, res: Response): Promise<void> => {
 router.get("/model/:name", async (req: Request, res: Response): Promise<void> => {
   try {
     const { name } = req.params;
-    const modelPath = path.join(modelsPath, name);
+    const modelPath = resolveModelPath(name);
+    if (!modelPath) {
+      res.status(400).json({ success: false, message: "Invalid model name" });
+      return;
+    }
 
     try {
       await fs.promises.access(modelPath);
@@ -192,7 +203,11 @@ router.post("/model", async (req: Request, res: Response): Promise<void> => {
     }
 
     const { modelName, sensors, xdyn } = body;
-    const folderPath = path.join(modelsPath, modelName);
+    const folderPath = resolveModelPath(modelName);
+    if (!folderPath) {
+      res.status(400).json({ success: false, message: "Invalid field: modelName" });
+      return;
+    }
 
     await ensureDirectory(folderPath);
 
@@ -220,11 +235,11 @@ router.post("/model", async (req: Request, res: Response): Promise<void> => {
  */
 const deleteModel = async (name: unknown, res: Response): Promise<void> => {
   try {
-    if (!name || typeof name !== "string") {
+    const modelPath = resolveModelPath(name);
+    if (!modelPath) {
       res.status(400).json({ success: false, message: "Missing or invalid model name" });
       return;
     }
-    const modelPath = path.join(modelsPath, name);
 
     try {
       await fs.promises.access(modelPath);

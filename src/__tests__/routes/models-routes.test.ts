@@ -212,3 +212,56 @@ describe("DELETE /model/:name", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ─── Path safety ──────────────────────────────────────────────
+
+describe("path safety", () => {
+  const decoy = path.join(os.tmpdir(), "lotusim-test-decoy");
+  const decoyFile = path.join(decoy, "important.txt");
+
+  beforeEach(async () => {
+    await fs.promises.mkdir(decoy, { recursive: true });
+    await fs.promises.writeFile(decoyFile, "keep");
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(decoy, { recursive: true, force: true });
+  });
+
+  it("refuses to delete outside the models folder (path form)", async () => {
+    const res = await request(app).delete("/model/..%2Flotusim-test-decoy");
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(decoyFile)).toBe(true);
+  });
+
+  it("refuses to delete outside the models folder (query form)", async () => {
+    const res = await request(app).delete("/model").query({ name: "../lotusim-test-decoy" });
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(decoyFile)).toBe(true);
+  });
+
+  it("refuses to delete the models folder itself", async () => {
+    await fs.promises.mkdir(path.join(TEST_DIR, "keepme"));
+    const res = await request(app).delete("/model").query({ name: "." });
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(path.join(TEST_DIR, "keepme"))).toBe(true);
+  });
+
+  it("refuses an array of names", async () => {
+    const res = await request(app).delete("/model?name=a&name=b");
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses to create a model outside the models folder", async () => {
+    const res = await request(app)
+      .post("/model")
+      .send({ modelName: "../lotusim-test-created", sensors: [] });
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(path.join(os.tmpdir(), "lotusim-test-created"))).toBe(false);
+  });
+
+  it("refuses to read outside the models folder", async () => {
+    const res = await request(app).get("/model/..%2Flotusim-test-decoy");
+    expect(res.status).toBe(400);
+  });
+});
