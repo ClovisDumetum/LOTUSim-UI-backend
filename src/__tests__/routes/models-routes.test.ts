@@ -128,20 +128,12 @@ describe("POST /model", () => {
     expect(res.body.success).toBe(false);
   });
 
-  it("returns 400 when stl is missing", async () => {
-    const res = await request(app)
-      .post("/model")
-      .send({ modelName: "ship", image: "foo.png", sensors: [] });
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
-  });
-
-  it("returns 400 when image is missing", async () => {
-    const res = await request(app)
-      .post("/model")
-      .send({ modelName: "ship", stl: "foo.stl", sensors: [] });
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
+  // The frontend sends the STL and the image afterwards, through POST /upload:
+  // requiring them here made every creation fail with 400.
+  it("creates the model without stl and image", async () => {
+    const res = await request(app).post("/model").send({ modelName: "bare", sensors: [] });
+    expect(res.status).toBe(201);
+    expect(fs.existsSync(path.join(TEST_DIR, "bare", "model.sdf"))).toBe(true);
   });
 
   it("creates model directory and SDF file", async () => {
@@ -203,5 +195,73 @@ describe("DELETE /model/:name", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(fs.existsSync(modelPath)).toBe(false);
+  });
+
+  // Earlier frontends sent DELETE /model?name=..., which answered 404.
+  it("also deletes with the name as a query parameter", async () => {
+    const modelPath = path.join(TEST_DIR, "byQuery");
+    await fs.promises.mkdir(modelPath);
+
+    const res = await request(app).delete("/model").query({ name: "byQuery" });
+    expect(res.status).toBe(200);
+    expect(fs.existsSync(modelPath)).toBe(false);
+  });
+
+  it("returns 400 without a name", async () => {
+    const res = await request(app).delete("/model");
+    expect(res.status).toBe(400);
+  });
+});
+
+// ─── Path safety ──────────────────────────────────────────────
+
+describe("path safety", () => {
+  const decoy = path.join(os.tmpdir(), "lotusim-test-decoy");
+  const decoyFile = path.join(decoy, "important.txt");
+
+  beforeEach(async () => {
+    await fs.promises.mkdir(decoy, { recursive: true });
+    await fs.promises.writeFile(decoyFile, "keep");
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(decoy, { recursive: true, force: true });
+  });
+
+  it("refuses to delete outside the models folder (path form)", async () => {
+    const res = await request(app).delete("/model/..%2Flotusim-test-decoy");
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(decoyFile)).toBe(true);
+  });
+
+  it("refuses to delete outside the models folder (query form)", async () => {
+    const res = await request(app).delete("/model").query({ name: "../lotusim-test-decoy" });
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(decoyFile)).toBe(true);
+  });
+
+  it("refuses to delete the models folder itself", async () => {
+    await fs.promises.mkdir(path.join(TEST_DIR, "keepme"));
+    const res = await request(app).delete("/model").query({ name: "." });
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(path.join(TEST_DIR, "keepme"))).toBe(true);
+  });
+
+  it("refuses an array of names", async () => {
+    const res = await request(app).delete("/model?name=a&name=b");
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses to create a model outside the models folder", async () => {
+    const res = await request(app)
+      .post("/model")
+      .send({ modelName: "../lotusim-test-created", sensors: [] });
+    expect(res.status).toBe(400);
+    expect(fs.existsSync(path.join(os.tmpdir(), "lotusim-test-created"))).toBe(false);
+  });
+
+  it("refuses to read outside the models folder", async () => {
+    const res = await request(app).get("/model/..%2Flotusim-test-decoy");
+    expect(res.status).toBe(400);
   });
 });
