@@ -120,30 +120,51 @@ export class WebSocketServer {
    *
    * Each client receives position data for the vessels in the instance they are associated with.
    */
-  private broadcastVesselData(): void {
-    this.clientNameWsMapping.forEach((ws, clientName) => {
-      const vesselPositionMap = rosInstances.getInstancevesselPositionMap(clientName);
+  private async broadcastVesselData(): Promise<void> {
+    for (const [clientName, ws] of this.clientNameWsMapping) {
+      try {
+        const vesselPositionMap = rosInstances.getInstancevesselPositionMap(clientName);
 
-      if (vesselPositionMap) {
-        const jsonArray = Array.from(vesselPositionMap.entries()).map(
-          ([vesselName, vesselInfo]) => ({
-            vesselName: vesselName,
-            geoPoint: {
-              latitude: vesselInfo.geoPoint?.latitude,
-              longitude: vesselInfo.geoPoint?.longitude,
-              altitude: vesselInfo.geoPoint?.altitude,
-            },
-            heading: vesselInfo.heading,
+        if (!vesselPositionMap) {
+          console.log(`No vessel data found for client: ${clientName}`);
+          continue;
+        }
+
+        const powerStatusMap = rosInstances.getInstancePowerStatusMap(clientName);
+
+        const jsonArray = await Promise.all(
+          Array.from(vesselPositionMap.entries()).map(async ([vesselName, vesselInfo]) => {
+            const power = powerStatusMap?.get(vesselName);
+
+            let sensors: import("../models/sdf-parser").SensorInfo[] = [];
+            try {
+              sensors = await rosInstances.getVesselSensors(clientName, vesselName);
+            } catch (err) {
+              console.error(`Failed to get sensors for vessel '${vesselName}':`, err);
+            }
+
+            return {
+              vesselName,
+              geoPoint: {
+                latitude: vesselInfo.geoPoint?.latitude,
+                longitude: vesselInfo.geoPoint?.longitude,
+                altitude: vesselInfo.geoPoint?.altitude,
+              },
+              heading: vesselInfo.heading,
+              sensors,
+              power: power ? { activeProvider: power.activeProvider, providers: power.providers } : null,
+            };
           }),
         );
+
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(jsonArray, null, 2));
         } else {
           console.log(`websocket close`);
         }
-      } else {
-        console.log(`No vessel data found for client: ${clientName}`);
+      } catch (err) {
+        console.error(`broadcastVesselData failed for client '${clientName}':`, err);
       }
-    });
+    }
   }
 }

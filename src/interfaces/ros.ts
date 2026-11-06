@@ -30,6 +30,7 @@
 import * as rclnodejs from "rclnodejs";
 import { GeoPoint, VesselPosition, Pose } from "./geometry";
 import { quaternionToGpsHeading } from "../utils";
+import { parseModelSdf, SensorInfo } from "../models/sdf-parser";
 
 // ─── ROS Message Types ───────────────────────────────────────
 
@@ -41,12 +42,30 @@ const MASCmdMsg = rclnodejs.require("lotusim_msgs/msg/MASCmd");
 const GeoPointMsg = rclnodejs.require("geographic_msgs/msg/GeoPoint");
 const SrvString = rclnodejs.require("lotusim_msgs/srv/String");
 const Trigger = rclnodejs.require("std_srvs/srv/Trigger");
+const PowerStatusMsg = rclnodejs.require("lotusim_msgs/msg/PowerStatus");
 
 type VesselPositionArray = InstanceType<typeof VesselPositionArrayMsg>;
 type MASCmdArrayGoal = InstanceType<typeof MASCmdArrayAction.Goal>;
 type MASCmdArrayFeedback = InstanceType<typeof MASCmdArrayAction.Feedback>;
 type MASCmdGoal = InstanceType<typeof MASCmdAction.Goal>;
 type MASCmdFeedback = InstanceType<typeof MASCmdAction.Feedback>;
+type PowerStatusRos = InstanceType<typeof PowerStatusMsg>;
+
+/** power status of the vessel */
+const powerStatusTopic = (vesselName: string) => `/lotusim/${vesselName}/power_status`;
+
+export interface PowerProviderStatus {
+  name: string;
+  type: string;
+  soc: number;
+  voltage: number;
+}
+
+export interface VesselPowerStatus {
+  vesselName: string;
+  activeProvider: string;
+  providers: PowerProviderStatus[];
+}
 
 /** REST request body for a single MAS command — camelCase, not the ROS message shape. */
 export interface MASCmdRequest {
@@ -87,11 +106,15 @@ class RosInstance {
   readonly #instanceName: string;
   readonly #node: rclnodejs.Node;
   readonly #vesselPositionMap: Map<string, VesselPosition> = new Map();
+  #runningScenario: string | null = null;
   readonly #poseSub: rclnodejs.Subscription;
   readonly #masCmdClient: rclnodejs.ActionClient<"lotusim_msgs/action/MASCmd">;
   readonly #masArrayCmdClient: rclnodejs.ActionClient<"lotusim_msgs/action/MASCmdArray">;
   readonly #scenarioLaunchClient: rclnodejs.Client<"lotusim_msgs/srv/String">;
   readonly #scenarioStopClient: rclnodejs.Client<"std_srvs/srv/Trigger">;
+  readonly #vesselModelMap: Map<string, string> = new Map();
+  readonly #powerStatusMap: Map<string, VesselPowerStatus> = new Map();
+  readonly #powerSubs: Map<string, rclnodejs.Subscription> = new Map();
 
   constructor(node: rclnodejs.Node, instanceName: string = "") {
     this.#instanceName = instanceName;
@@ -130,6 +153,10 @@ class RosInstance {
     return this.#instanceName;
   }
 
+  get runningScenario(): string | null {
+    return this.#runningScenario;
+  }
+
   get vesselPositionMap(): Map<string, VesselPosition> {
     return this.#vesselPositionMap;
   }
@@ -138,8 +165,18 @@ class RosInstance {
     return this.#vesselPositionMap.get(vesselName) ?? null;
   }
 
+  getVesselModel(vesselName: string): string | null {
+    return this.#vesselModelMap.get(vesselName) ?? null;
+  }
+
+  getPowerStatusMap(): Map<string, VesselPowerStatus> {
+    return this.#powerStatusMap;
+  }
+
   destroy(): void {
     this.#node.destroySubscription(this.#poseSub);
+    this.#powerSubs.forEach((sub) => this.#node.destroySubscription(sub));
+    this.#powerSubs.clear();
     this.#masCmdClient.destroy();
     this.#masArrayCmdClient.destroy();
   }
@@ -163,7 +200,12 @@ class RosInstance {
     this.#vesselPositionMap.clear();
 
     for (const vesselPosition of vesselPositionArray.vessels) {
-      const { vessel_name: vesselName, geo_point: geoPoint, pose } = vesselPosition;
+      const {
+        vessel_name: vesselName,
+        model_name: modelName,
+        geo_point: geoPoint,
+        pose,
+      } = vesselPosition;
 
       if (
         !geoPoint ||
@@ -174,6 +216,12 @@ class RosInstance {
         console.warn(`Invalid geoPoint data for vessel: ${vesselName}`);
         continue;
       }
+
+      if (modelName) {
+        this.#vesselModelMap.set(vesselName, modelName);
+      }
+
+      this.#subscribeToPowerStatus(vesselName);
 
       const point = new GeoPoint(geoPoint.latitude, geoPoint.longitude, geoPoint.altitude);
 
@@ -223,18 +271,76 @@ class RosInstance {
     }
   }
 
+  #subscribeToPowerStatus(vesselName: string): void {
+    if (this.#powerSubs.has(vesselName)) return;
+    const sub = this.#node.createSubscription(
+      "lotusim_msgs/msg/PowerStatus",
+      powerStatusTopic(vesselName),
+      (msg: PowerStatusRos) => this.#powerStatusCB(vesselName, msg),
+    );
+    this.#powerSubs.set(vesselName, sub);
+  }
+
+  #unsubscribeFromPowerStatus(vesselName: string): void {
+    const sub = this.#powerSubs.get(vesselName);
+    if (sub) {
+      this.#node.destroySubscription(sub);
+      this.#powerSubs.delete(vesselName);
+    }
+    this.#powerStatusMap.delete(vesselName);
+  }
+
+  #powerStatusCB(vesselName: string, msg: PowerStatusRos): void {
+    const providers: PowerProviderStatus[] = (msg.providers_name ?? []).map(
+      (name: string, i: number) => ({
+        name,
+        type: msg.providers_type?.[i] ?? "unknown",
+        soc: msg.providers_soc?.[i] ?? 0,
+        voltage: msg.providers_voltage?.[i] ?? 0,
+      }),
+    );
+    this.#powerStatusMap.set(vesselName, {
+      vesselName,
+      activeProvider: msg.active_provider,
+      providers,
+    });
+    console.log(
+      `[${this.#instanceName}] Power status received for ${vesselName}:`,
+      msg
+    );
+  }
+
+  #handleCmdSideEffects(cmd: { cmd_type: number; vessel_name?: string; model_name?: string }): void {
+    const vesselName = cmd.vessel_name;
+    if (!vesselName) return;
+
+    if (cmd.cmd_type === 0) {
+      // CREATE
+      if (cmd.model_name) this.#vesselModelMap.set(vesselName, cmd.model_name);
+      this.#subscribeToPowerStatus(vesselName);
+    } else if (cmd.cmd_type === 1) {
+      // DELETE
+      this.#vesselModelMap.delete(vesselName);
+      this.#unsubscribeFromPowerStatus(vesselName);
+    }
+  }
+
   /**
    * Sends a single MAS command (create, delete, or move) to the action server.
    */
   async sendMASCmd(masCmd: MASCmdGoal): Promise<boolean> {
-    return this.#sendGoal(this.#masCmdClient, masCmd);
+    const ok = await this.#sendGoal(this.#masCmdClient, masCmd);
+    if (ok) this.#handleCmdSideEffects(masCmd.cmd);
+    return ok;
   }
 
   /**
    * Sends an array of MAS commands to the action server.
    */
   async sendMASCmdArray(masCmdArray: MASCmdArrayGoal): Promise<boolean> {
-    return this.#sendGoal(this.#masArrayCmdClient, masCmdArray);
+    const ok = await this.#sendGoal(this.#masArrayCmdClient, masCmdArray);
+    if (ok) masCmdArray.cmd.forEach((c: any) => this.#handleCmdSideEffects(c));
+    return ok;
   }
 
   /**
@@ -251,6 +357,7 @@ class RosInstance {
     return new Promise((resolve) => {
       this.#scenarioLaunchClient.sendRequest(request, (response: any) => {
         if (response.success) {
+          this.#runningScenario = scenario_name;
           console.log(`[${this.#instanceName}] Scenario launched: ${response.message}`);
         } else {
           console.error(`[${this.#instanceName}] Launch failed: ${response.message}`);
@@ -266,6 +373,7 @@ class RosInstance {
     return new Promise((resolve) => {
       this.#scenarioStopClient.sendRequest(request, (response: any) => {
         if (response.success) {
+          this.#runningScenario = null;
           console.log(`[${this.#instanceName}] Scenario stopped: ${response.message}`);
         } else {
           console.error(`[${this.#instanceName}] Stop failed: ${response.message}`);
@@ -348,6 +456,15 @@ export class ROSInstances {
       }
     }
     return namespaces;
+  }
+
+  async getVesselSensors(instance: string, vesselName: string): Promise<SensorInfo[]> {
+    const modelName = this.#instanceMap.get(instance)?.getVesselModel(vesselName);
+    return modelName ? (await parseModelSdf(modelName)).sensors : [];
+  }
+
+  getInstancePowerStatusMap(instance: string): Map<string, VesselPowerStatus> | null {
+    return this.#instanceMap.get(instance)?.getPowerStatusMap() ?? null;
   }
 
   /** Adds a new instance. No-ops if an instance with that name already exists. */
@@ -469,6 +586,10 @@ export class ROSInstances {
 
   async stopScenario(instance: string): Promise<boolean> {
     return this.#instanceMap.get(instance)?.stopScenario() ?? false;
+  }
+
+  getRunningScenario(instance: string): string | null | undefined {
+    return this.#instanceMap.get(instance)?.runningScenario;
   }
 }
 

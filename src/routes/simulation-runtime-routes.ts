@@ -162,4 +162,24 @@ router.post(
   },
 );
 
+router.get("/instance/:instance/running-scenario", (req: Request, res: Response): void => {
+  const { instance } = req.params;
+
+  const scenario = rosInstances.getRunningScenario(instance);
+
+  if (scenario === undefined) {
+    res.status(404).json({
+      success: false,
+      message: `Instance '${instance}' not found.`,
+    });
+    return;
+  }
+
+  res.status(200).json({
+    success: true,
+    running: scenario !== null,
+    scenario_name: scenario,
+  });
+});
+
 export default router;
