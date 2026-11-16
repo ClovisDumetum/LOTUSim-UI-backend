@@ -30,6 +30,7 @@
 import * as rclnodejs from "rclnodejs";
 import { GeoPoint, VesselPosition } from "./geometry";
 import { parseModelSdf, SensorInfo } from "../models/sdf-parser";
+import { validateMASCmd } from "../utils";
 
 // ─── ROS Message Types ───────────────────────────────────────
 
@@ -504,6 +505,13 @@ export class ROSInstances {
    * Sends an array of MAS commands to the given instance.
    */
   async sendMASCmdArray(instance: string, cmds: MASCmdRequest[]): Promise<boolean> {
+    for (const c of cmds) {
+      const error = validateMASCmd(c);
+      if (error) {
+        console.error(`sendMASCmdArray rejected: ${error}`);
+        return false;
+      }
+    }
     const goal: MASCmdArrayGoal = new MASCmdArrayAction.Goal();
     goal.header = { stamp: systemClock.now().toMsg(), frame_id: "world" };
     goal.cmd = [];
@@ -536,6 +544,11 @@ export class ROSInstances {
    * Sends a single MAS command to the given instance.
    */
   async sendMASCmd(instance: string, cmd: MASCmdRequest): Promise<boolean> {
+    const error = validateMASCmd(cmd);
+    if (error) {
+      console.error(`sendMASCmd rejected: ${error}`);
+      return false;
+    }
     const goal: MASCmdGoal = new MASCmdAction.Goal();
     goal.header = { stamp: systemClock.now().toMsg(), frame_id: "world" };
     goal.cmd.cmd_type = cmd.cmdType;

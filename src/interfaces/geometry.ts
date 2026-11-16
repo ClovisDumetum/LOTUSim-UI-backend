@@ -16,39 +16,12 @@
  * Provides types, classes, and utility functions for handling geometry and spatial data.
  *
  * Includes:
- * - Conversion from latitude/longitude to local XY coordinates in meters.
- * - 3D vector and quaternion types.
- * - Pose interface representing position and orientation in 3D space.
- * - GeoPoint class for managing geographic points with latitude, longitude, altitude, and heading.
- *
- * Temporary note: Some functions (e.g., latLonToXY) are transitional measures as the
- * system is in-between geographic coordinates and local XY coordinates.
+ * - GeoPoint: a WGS84 position (latitude, longitude, altitude)
+ * - VesselPosition: a vessel's geographic position and heading (degrees from true North, clockwise)
+ * - Vector3, Quaternion and Pose: body-frame geometry for model and sensor definitions
+ *   (xdyn propellers and control surfaces, sensor noise). NOT used for vessel positions.
  *
  */
-
-// TODO: Center to be removed, used in function below
-export const latLongCenter: [number, number] = [1.2421, 103.7198] as const;
-
-/**
- * Temporary measure as the system is in between latLong and xy coordinate system for now
- * Convert lat/lon to local X/Y in meters relative to latLongCenter
- */
-export function latLonToXY(lat: number, lon: number): { x: number; y: number } {
-  const [lat0, lon0] = latLongCenter;
-
-  const R = 6378137; // WGS84 Earth radius in meters
-
-  // Convert degrees to radians
-  const degToRad = (deg: number) => (deg * Math.PI) / 180;
-
-  const dLat = degToRad(lat - lat0);
-  const dLon = degToRad(lon - lon0);
-
-  // Approximate conversions
-  const y = dLat * R;
-  const x = dLon * R * Math.cos(degToRad(lat0));
-  return { x, y };
-}
 
 export interface Vector3 {
   x: number;

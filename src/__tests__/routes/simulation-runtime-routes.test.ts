@@ -22,6 +22,7 @@ jest.mock("../../interfaces/ros", () => ({
 }));
 
 jest.mock("../../utils", () => ({
+  ...jest.requireActual("../../utils"),
   errorMessage: (err: unknown) => (err instanceof Error ? err.message : "Internal server error"),
 }));
 
@@ -79,26 +80,73 @@ describe("GET /instance/:instance/vessel", () => {
   });
 });
 
+const validCreate = {
+  cmdType: 0,
+  vesselName: "v1",
+  modelName: "lrauv",
+  geoPoint: { latitude: 1.26, longitude: 103.75, altitude: -30 },
+  heading: 90,
+};
+
 // ─── POST /instance/:instance/vessel ─────────────────────────
 
 describe("POST /instance/:instance/vessel", () => {
+  beforeEach(() => mockSendMASCmd.mockReset());
+
   it("returns 200 when command is accepted", async () => {
     mockSendMASCmd.mockResolvedValue(true);
-    const res = await request(app).post("/instance/sim1/vessel").send({ vessel_name: "v1" });
+    const res = await request(app).post("/instance/sim1/vessel").send(validCreate);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
   it("returns 400 when command is rejected", async () => {
     mockSendMASCmd.mockResolvedValue(false);
-    const res = await request(app).post("/instance/sim1/vessel").send({ vessel_name: "v1" });
+    const res = await request(app).post("/instance/sim1/vessel").send(validCreate);
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
 
+  it("accepts a MOVE at latitude 0 and heading 0", async () => {
+    mockSendMASCmd.mockResolvedValue(true);
+    const res = await request(app)
+      .post("/instance/sim1/vessel")
+      .send({
+        cmdType: 2,
+        vesselName: "v1",
+        geoPoint: { latitude: 0, longitude: 0, altitude: 0 },
+        heading: 0,
+      });
+    expect(res.status).toBe(200);
+    expect(mockSendMASCmd).toHaveBeenCalled();
+  });
+
+  it("accepts a DELETE without position or heading", async () => {
+    mockSendMASCmd.mockResolvedValue(true);
+    const res = await request(app).post("/instance/sim1/vessel").send({ cmdType: 1, vesselName: "v1" });
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ["missing heading", { ...validCreate, heading: undefined }],
+    ["missing geoPoint", { ...validCreate, geoPoint: undefined }],
+    ["heading-only MOVE", { cmdType: 2, vesselName: "v1", heading: 45 }],
+    ["position-only MOVE", { cmdType: 2, vesselName: "v1", geoPoint: validCreate.geoPoint }],
+    ["latitude 91", { ...validCreate, geoPoint: { ...validCreate.geoPoint, latitude: 91 } }],
+    ["longitude 181", { ...validCreate, geoPoint: { ...validCreate.geoPoint, longitude: 181 } }],
+    ["heading 360", { ...validCreate, heading: 360 }],
+    ["heading -1", { ...validCreate, heading: -1 }],
+    ["string heading", { ...validCreate, heading: "90" }],
+  ])("returns 400 and does not call ROS for %s", async (_name, body) => {
+    const res = await request(app).post("/instance/sim1/vessel").send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(mockSendMASCmd).not.toHaveBeenCalled();
+  });
+
   it("returns 500 on unexpected error", async () => {
     mockSendMASCmd.mockRejectedValue(new Error("ROS failure"));
-    const res = await request(app).post("/instance/sim1/vessel").send({});
+    const res = await request(app).post("/instance/sim1/vessel").send(validCreate);
     expect(res.status).toBe(500);
     expect(res.body.success).toBe(false);
     expect(res.body.message).toBe("ROS failure");
@@ -108,19 +156,43 @@ describe("POST /instance/:instance/vessel", () => {
 // ─── POST /instance/:instance/vessels ────────────────────────
 
 describe("POST /instance/:instance/vessels", () => {
+  beforeEach(() => mockSendMASCmdArray.mockReset());
+
   it("returns 200 when command array is accepted", async () => {
     mockSendMASCmdArray.mockResolvedValue(true);
-    const res = await request(app).post("/instance/sim1/vessels").send({ cmd: [] });
+    const res = await request(app).post("/instance/sim1/vessels").send({ cmd: [validCreate] });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
-  it("returns 400 when command array is rejected", async () => {
-    mockSendMASCmdArray.mockResolvedValue(false);
+  it("returns 200 for an empty array", async () => {
+    mockSendMASCmdArray.mockResolvedValue(true);
     const res = await request(app).post("/instance/sim1/vessels").send({ cmd: [] });
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 400 when command array is rejected by the core", async () => {
+    mockSendMASCmdArray.mockResolvedValue(false);
+    const res = await request(app).post("/instance/sim1/vessels").send({ cmd: [validCreate] });
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
+
+  it("names the invalid command and does not call ROS", async () => {
+    const res = await request(app)
+      .post("/instance/sim1/vessels")
+      .send({ cmd: [validCreate, { ...validCreate, heading: undefined }] });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("cmd[1]");
+    expect(mockSendMASCmdArray).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when cmd is not an array", async () => {
+    const res = await request(app).post("/instance/sim1/vessels").send({});
+    expect(res.status).toBe(400);
+    expect(mockSendMASCmdArray).not.toHaveBeenCalled();
+  });
+
 });
 
 // ─── DELETE /instance/:instance/vessels ──────────────────────
@@ -144,7 +216,7 @@ describe("POST /instance/:instance/start-scenario", () => {
   });
 
   it("returns 200 when launch is accepted", async () => {
-    mockLaunchScenario.mockResolvedValue(true);
+    mockLaunchScenario.mockResolvedValue({ success: true, message: "Scenario launched." });
     const res = await request(app)
       .post("/instance/sim1/start-scenario")
       .send({ scenario_name: "test.yaml" });
@@ -153,7 +225,7 @@ describe("POST /instance/:instance/start-scenario", () => {
   });
 
   it("returns 400 when launch is rejected", async () => {
-    mockLaunchScenario.mockResolvedValue(false);
+    mockLaunchScenario.mockResolvedValue({ success: false, message: "Launch failed." });
     const res = await request(app)
       .post("/instance/sim1/start-scenario")
       .send({ scenario_name: "test.yaml" });

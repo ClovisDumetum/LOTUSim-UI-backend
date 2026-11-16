@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: EPL-2.0
  */
 import { Quaternion } from "./interfaces/geometry";
+import { MASCmdRequest } from "./interfaces/ros";
 
 // ─── Path Resolution ─────────────────────────────────────────
 
@@ -57,3 +58,21 @@ export function quaternionToEulerZYX(q: Quaternion): [number, number, number] {
 export const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : "Internal server error";
 
+// ─── Message Validation ────────────────────────────────────────────────
+
+const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+// CREATE (0) and MOVE (2) always need a full position and heading
+// Returns an error message, or null if the command is valid
+export function validateMASCmd(cmd: MASCmdRequest): string | null {
+  if (cmd.cmdType !== 0 && cmd.cmdType !== 2) return null;
+
+  const g = cmd.geoPoint;
+  if (!g || !finite(g.latitude) || !finite(g.longitude) || !finite(g.altitude) || !finite(cmd.heading)) {
+    return "geoPoint (latitude, longitude, altitude) and heading are required.";
+  }
+  if (Math.abs(g.latitude) > 90 || Math.abs(g.longitude) > 180 || cmd.heading < 0 || cmd.heading >= 360) {
+    return "latitude must be in [-90, 90], longitude in [-180, 180], heading in [0, 360).";
+  }
+  return null;
+}

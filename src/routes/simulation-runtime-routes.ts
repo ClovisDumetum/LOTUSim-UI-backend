@@ -18,7 +18,7 @@ import { Router, Request, Response } from "express";
 import { MASCmdRequest, MASCmdArrayRequest, rosInstances } from "../interfaces/ros";
 import { VesselPosition } from "../interfaces/geometry";
 import { Scenario } from "../interfaces/lotusim/scenario";
-import { errorMessage, scenariosPath } from "../utils";
+import { errorMessage, scenariosPath, validateMASCmd } from "../utils";
 
 const router = Router();
 
@@ -60,6 +60,11 @@ router.post("/instance/:instance/vessel", async (req: Request, res: Response): P
   try {
     const { instance } = req.params;
     const cmd = req.body as MASCmdRequest;
+    const error = validateMASCmd(cmd);
+    if (error) {
+      res.status(400).json({ success: false, message: error });
+      return;
+    }
     const ok = await rosInstances.sendMASCmd(instance, cmd);
     if (ok) {
       res.status(200).json({ success: true, message: "MAS command accepted." });
@@ -76,6 +81,17 @@ router.post("/instance/:instance/vessels", async (req: Request, res: Response): 
   try {
     const { instance } = req.params;
     const cmds = (req.body as MASCmdArrayRequest).cmd;
+    if (!Array.isArray(cmds)) {
+      res.status(400).json({ success: false, message: "cmd must be an array." });
+      return;
+    }
+    for (const [i, cmd] of cmds.entries()) {
+      const error = validateMASCmd(cmd);
+      if (error) {
+        res.status(400).json({ success: false, message: `cmd[${i}]: ${error}` });
+        return;
+      }
+    }
     const ok = await rosInstances.sendMASCmdArray(instance, cmds);
     if (ok) {
       res.status(200).json({ success: true, message: "MAS command array accepted." });
