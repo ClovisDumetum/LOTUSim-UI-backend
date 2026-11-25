@@ -24,7 +24,7 @@
  */
 
 import WebSocket from "ws";
-import { rosInstances } from "./ros";
+import { rosInstances, DiagnosticLog } from "./ros";
 import { GeoPoint } from "./geometry";
 import http from "http";
 
@@ -54,6 +54,9 @@ export class WebSocketServer {
     this.clientNameWsMapping = new Map<string, WebSocket>();
     this.wsClientNameMapping = new Map<WebSocket, string>();
     console.log(`WebSocket server started.`);
+    rosInstances.setLogCallback((log) => {
+      this.broadcastLog(log);
+    });
   }
 
   /**
@@ -166,5 +169,18 @@ export class WebSocketServer {
         console.error(`broadcastVesselData failed for client '${clientName}':`, err);
       }
     }
+  }
+
+  /**
+   * Broadcasts log messages to all connected clients.
+   */
+  private broadcastLog(log: DiagnosticLog): void {
+    const payload = JSON.stringify({ type: "log", log });
+
+    this.wsClientNameMapping.forEach((_, ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(payload);
+      }
+    });
   }
 }

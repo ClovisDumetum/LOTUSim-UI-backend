@@ -35,6 +35,7 @@
             rmw-fastrtps-cpp
             action-msgs
             service-msgs
+            diagnostic-msgs
             unique-identifier-msgs
             builtin-interfaces
             lifecycle-msgs

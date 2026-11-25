@@ -84,6 +84,51 @@ export interface MASCmdArrayRequest {
   cmd: MASCmdRequest[];
 }
 
+// builtin_interfaces/Time
+export interface Time {
+  sec: number;
+  nanosec: number;
+}
+
+// std_msgs/Header
+export interface Header {
+  stamp: Time;
+  frame_id: string;
+}
+
+// diagnostic_msgs/KeyValue
+export interface KeyValue {
+  key: string;
+  value: string;
+}
+
+// diagnostic_msgs/DiagnosticStatus
+export interface DiagnosticStatus {
+  level: number; // OK=0, WARN=1, ERROR=2, STALE=3
+  name: string;
+  message: string;
+  hardware_id: string;
+  values: KeyValue[];
+}
+export const DiagnosticStatusLevel = {
+  OK: 0,
+  WARN: 1,
+  ERROR: 2,
+  STALE: 3,
+} as const;
+
+// diagnostic_msgs/DiagnosticArray
+export interface DiagnosticArray {
+  header: Header;
+  status: DiagnosticStatus[];
+}
+
+// LOTUSim specific for display
+export interface DiagnosticLog {
+  stamp: Time;
+  status: DiagnosticStatus;
+}
+
 // ─── Shared Clock ────────────────────────────────────────────
 
 const systemClock = new rclnodejs.Clock(rclnodejs.ClockType.SYSTEM_TIME);
@@ -392,12 +437,18 @@ class RosInstance {
 export class ROSInstances {
   readonly #instanceMap: Map<string, RosInstance> = new Map();
   readonly #node: rclnodejs.Node;
+  readonly #logSub: rclnodejs.Subscription;
 
   constructor() {
     if (rclnodejs.isShutdown()) {
       rclnodejs.init();
     }
     this.#node = new rclnodejs.Node("UserInterfaceNode");
+    this.#logSub = this.#node.createSubscription(
+      "diagnostic_msgs/msg/DiagnosticArray",
+      "/diagnostics",
+      this.#diagnosticsCB.bind(this),
+    );
     this.startNode();
   }
 
@@ -422,6 +473,22 @@ export class ROSInstances {
       }
     };
     setInterval(sync, 5000);
+  }
+
+  #logCallback?: (log: DiagnosticLog) => void;
+  public setLogCallback(callback: (log: DiagnosticLog) => void): void {
+    this.#logCallback = callback;
+  }
+
+  #diagnosticsCB(msg: DiagnosticArray): void {
+    if (!this.#logCallback || !Array.isArray(msg?.status)) return;
+
+    for (const status of msg.status) {
+      this.#logCallback({
+        stamp: msg.header.stamp,
+        status,
+      });
+    }
   }
 
   /** Destroys the ROS2 node and all managed instances. */
